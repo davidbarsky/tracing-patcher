@@ -1,5 +1,5 @@
-use std::fmt;
 use std::hash::Hash;
+use std::{fmt, ops::Deref};
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 use clap::Parser;
@@ -7,9 +7,22 @@ use git2::Repository;
 use regex::Regex;
 use rustc_hash::FxHashSet;
 
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Path corresponding to the location of `tracing`'s repo.
+    path: std::path::PathBuf,
+    /// Date, in a year-month-day hour-minute-second format.
+    since: String,
+    /// Default branch to compare against.
+    #[arg(short, long, default_value = "v0.1.x")]
+    destination: String,
+}
+
 #[derive(Debug, Default, Ord)]
 struct Commit {
     message: String,
+    hash: String,
     pull_request: i64,
     date: DateTime<Utc>,
 }
@@ -36,17 +49,8 @@ impl PartialOrd for Commit {
 
 impl fmt::Display for Commit {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ({})", self.message, self.date)
+        write!(f, "{} ({}) ({:.7})", self.message, self.date, self.hash)
     }
-}
-
-#[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
-struct Args {
-    /// Path corresponding to the location of `tracing`'s repo.
-    path: std::path::PathBuf,
-    /// Date, in a year-month-day hour-minute-second format.
-    since: String,
 }
 
 fn main() -> Result<(), anyhow::Error> {
@@ -60,7 +64,7 @@ fn main() -> Result<(), anyhow::Error> {
         .into_reference()
         .target()
         .expect("Unable to unwrap main Oid");
-    let backport = repo.find_branch("v0.1.x", git2::BranchType::Local)?;
+    let backport = repo.find_branch(&args.destination, git2::BranchType::Local)?;
     let backport = backport
         .into_reference()
         .target()
@@ -75,9 +79,19 @@ fn main() -> Result<(), anyhow::Error> {
 
     difference.sort_by(|a, b| a.date.cmp(&b.date));
 
-    for diff in difference {
-        println!("{}", diff)
+    let mut missing_commits = vec![];
+    for commit in difference {
+        println!("{}", commit);
+
+        missing_commits.push(commit.hash.clone());
     }
+
+    let commits = missing_commits.as_slice().deref().join(" ");
+
+    println!(
+        "git cherry-pick --strategy=recursive -X rename-threshold=25 {}",
+        commits
+    );
 
     Ok(())
 }
@@ -122,6 +136,7 @@ fn commits_on_branch(
         let commit = Commit {
             message: next,
             pull_request,
+            hash: commit.id().to_string(),
             date: dt,
         };
 
